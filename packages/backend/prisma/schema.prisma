@@ -1,0 +1,657 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Enums
+// ============================================
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  AGENT
+  USER
+}
+
+enum PlanType {
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+enum CallStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum ASRProvider {
+  DEEPGRAM
+  GOOGLE
+  WHISPER
+}
+
+enum TTSProvider {
+  GOOGLE
+  ELEVENLABS
+  AWS_POLLY
+}
+
+enum LLMProvider {
+  OPENAI
+  ANTHROPIC
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  RECEIVED
+}
+
+enum PhoneNumberStatus {
+  ACTIVE
+  RELEASED
+  SUSPENDED
+}
+
+enum CallDisposition {
+  ANSWERED
+  VOICEMAIL
+  MISSED
+  ABANDONED
+  TRANSFERRED
+  ESCALATED
+  BOOKED
+  MESSAGE_TAKEN
+  INFO_PROVIDED
+  SPAM
+  FOLLOW_UP_NEEDED
+}
+
+// ============================================
+// Models
+// ============================================
+
+model Tenant {
+  id                String      @id @default(uuid())
+  name              String
+  slug              String      @unique
+  domain            String?
+  logoUrl           String?
+  planId            PlanType    @default(BASIC)
+  billingCustomerId String?     @unique // Stripe customer ID
+  subscriptionId    String?     // Stripe subscription ID
+  subscriptionStatus String?
+  
+  // Configuration
+  config            TenantConfig?
+  
+  // Relationships
+  users             User[]
+  calls             Call[]
+  bookings          Booking[]
+  transcripts       Transcript[]
+  recordings        Recording[]
+  auditLogs         AuditLog[]
+  usageRecords      UsageRecord[]
+  phoneNumbers      PhoneNumber[]
+  messages          Message[]
+  voicemails        Voicemail[]
+  faqs              FAQ[]
+  knowledgeBases    KnowledgeBase[]
+  
+  // Timestamps
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  deletedAt         DateTime?
+  
+  @@index([slug])
+  @@index([billingCustomerId])
+}
+
+model TenantConfig {
+  id                    String      @id @default(uuid())
+  tenantId              String      @unique
+  tenant                Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Provider settings
+  asrProvider           ASRProvider @default(DEEPGRAM)
+  ttsProvider           TTSProvider @default(GOOGLE)
+  llmProvider           LLMProvider @default(OPENAI)
+  
+  // Encrypted provider keys (tenant-specific)
+  asrApiKeyEncrypted    String?
+  ttsApiKeyEncrypted    String?
+  llmApiKeyEncrypted    String?
+  
+  // Receptionist personality
+  receptionistName      String      @default("Alex")
+  receptionistPersonality String?   @db.Text
+  welcomeMessage        String?     @db.Text
+  goodbyeMessage        String?     @db.Text
+  
+  // Voice settings
+  voiceId               String?
+  voiceLanguage         String      @default("en-US")
+  allowedLanguages      String[]    @default(["en-US"])
+  
+  // Business settings
+  businessName          String?
+  businessDescription   String?     @db.Text
+  timezone              String      @default("UTC")
+  businessHours         Json?       // { monday: { start: "09:00", end: "17:00" }, ... }
+  
+  // Feature flags
+  recordingEnabled      Boolean     @default(true)
+  transcriptionEnabled  Boolean     @default(true)
+  videoEnabled          Boolean     @default(false)
+  consentRequired       Boolean     @default(true)
+  
+  // Data retention
+  retentionDays         Int         @default(90)
+  
+  // Integration settings
+  googleCalendarEnabled Boolean     @default(false)
+  googleCalendarId      String?
+  googleRefreshToken    String?
+  
+  // Widget settings
+  widgetPrimaryColor    String      @default("#2563eb")
+  widgetPosition        String      @default("bottom-right")
+  
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+}
+
+model User {
+  id            String      @id @default(uuid())
+  tenantId      String
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  email         String
+  passwordHash  String
+  displayName   String
+  avatarUrl     String?
+  role          UserRole    @default(USER)
+  
+  // Status
+  isActive      Boolean     @default(true)
+  emailVerified Boolean     @default(false)
+  lastLoginAt   DateTime?
+  
+  // Relationships
+  calls         Call[]      @relation("UserCalls")
+  agentCalls    Call[]      @relation("AgentCalls")
+  bookings      Booking[]
+  auditLogs     AuditLog[]
+  
+  // Timestamps
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  deletedAt     DateTime?
+  
+  @@unique([tenantId, email])
+  @@index([email])
+  @@index([tenantId])
+}
+
+model Call {
+  id              String      @id @default(uuid())
+  tenantId        String
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  userId          String?     // Anonymous caller may not have user
+  user            User?       @relation("UserCalls", fields: [userId], references: [id])
+  
+  agentId         String?     // If escalated to agent
+  agent           User?       @relation("AgentCalls", fields: [agentId], references: [id])
+  
+  // LiveKit
+  livekitRoom     String      @unique
+  livekitSid      String?     // Session ID
+  
+  // Call details
+  status          CallStatus  @default(PENDING)
+  callerName      String?
+  callerPhone     String?
+  callerEmail     String?
+  outcome         String?     // Call outcome (e.g., 'BOOKED', 'MESSAGE_TAKEN')
+  disposition     CallDisposition? // Structured call disposition
+  summary         String?     @db.Text  // AI-generated post-call summary
+  sentiment       String?     // positive, neutral, negative
+  notes           String?     @db.Text  // Agent notes or escalation reason
+  
+  // Detected intents
+  intents         String[]    @default([])
+  primaryIntent   String?
+  
+  // Metadata
+  metadata        Json?
+  
+  // Timing
+  startedAt       DateTime?
+  endedAt         DateTime?
+  durationSeconds Int?
+  escalatedAt     DateTime?   // When call was escalated to human
+  agentJoinedAt   DateTime?   // When human agent joined
+  
+  // Relationships
+  transcript      Transcript?
+  recording       Recording?
+  bookings        Booking[]
+  messages        Message[]
+  voicemail       Voicemail?
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([tenantId])
+  @@index([livekitRoom])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Transcript {
+  id          String      @id @default(uuid())
+  callId      String      @unique
+  call        Call        @relation(fields: [callId], references: [id], onDelete: Cascade)
+  tenantId    String
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Full text for search
+  fullText    String?     @db.Text
+  
+  // Segments with timing
+  segments    Json        @default("[]") // [{ start: 0, end: 1.5, speaker: "user", text: "..." }]
+  
+  // Language detection
+  language    String      @default("en-US")
+  
+  // Processing status
+  isProcessed Boolean     @default(false)
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  @@index([tenantId])
+  @@index([callId])
+}
+
+model Recording {
+  id            String      @id @default(uuid())
+  callId        String      @unique
+  call          Call        @relation(fields: [callId], references: [id], onDelete: Cascade)
+  tenantId      String
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Storage
+  s3Key         String
+  s3Bucket      String
+  fileSize      Int
+  mimeType      String      @default("audio/webm")
+  durationMs    Int?
+  
+  // Status
+  isReady       Boolean     @default(false)
+  
+  // Retention
+  expiresAt     DateTime?
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  
+  @@index([tenantId])
+  @@index([callId])
+  @@index([expiresAt])
+}
+
+model Booking {
+  id              String          @id @default(uuid())
+  tenantId        String
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  callId          String?
+  call            Call?           @relation(fields: [callId], references: [id])
+  
+  userId          String?
+  user            User?           @relation(fields: [userId], references: [id])
+  
+  // Booking details
+  title           String
+  description     String?         @db.Text
+  status          BookingStatus   @default(PENDING)
+  
+  // Scheduling
+  scheduledAt     DateTime
+  durationMinutes Int             @default(30)
+  timezone        String          @default("UTC")
+  
+  // Contact info
+  contactName     String
+  contactEmail    String?
+  contactPhone    String?
+  
+  // External calendar
+  googleEventId   String?
+  
+  // Reminders
+  reminderSent    Boolean         @default(false)
+  
+  // Metadata
+  metadata        Json?
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  @@index([tenantId])
+  @@index([scheduledAt])
+  @@index([status])
+}
+
+model UsageRecord {
+  id            String      @id @default(uuid())
+  tenantId      String
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Usage tracking
+  periodStart   DateTime
+  periodEnd     DateTime
+  
+  // Metrics
+  totalMinutes  Int         @default(0)
+  totalCalls    Int         @default(0)
+  totalBookings Int         @default(0)
+  
+  // Billing
+  stripeUsageRecordId String?
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  
+  @@unique([tenantId, periodStart, periodEnd])
+  @@index([tenantId])
+  @@index([periodStart])
+}
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  tenantId    String
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  userId      String?
+  user        User?       @relation(fields: [userId], references: [id])
+  
+  // Action details
+  action      String      // e.g., "call.started", "booking.created", "user.login"
+  resourceType String?    // e.g., "call", "booking", "user"
+  resourceId  String?
+  
+  // Context
+  ipAddress   String?
+  userAgent   String?
+  
+  // Data (before/after for updates)
+  metadata    Json?
+  
+  createdAt   DateTime    @default(now())
+  
+  @@index([tenantId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// Session tokens for password reset, email verification
+model Token {
+  id        String      @id @default(uuid())
+  token     String      @unique
+  type      String      // "password_reset", "email_verification", "api_key"
+  userId    String?
+  tenantId  String?
+  
+  expiresAt DateTime
+  usedAt    DateTime?
+  
+  createdAt DateTime    @default(now())
+  
+  @@index([token])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ============================================
+// Telephony & SMS
+// ============================================
+
+model PhoneNumber {
+  id              String            @id @default(uuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Twilio fields
+  phoneNumber     String            @unique  // E.164 format: +15551234567
+  twilioSid       String            @unique  // Twilio Phone Number SID
+  friendlyName    String?
+  
+  // Bring Your Own Number (BYON) support
+  numberType      String            @default("twilio")  // "twilio" = purchased via Twilio, "byon" = business's own number forwarded
+  businessNumber  String?           // The business's original number (when numberType = "byon")
+  forwardingSetup Boolean           @default(false)  // Whether the business confirmed forwarding is set up
+  
+  // Configuration
+  capabilities    Json?             // { voice: true, sms: true, mms: false }
+  forwardingNumber String?          // Number to forward calls to (human fallback)
+  voicemailEnabled Boolean          @default(true)
+  smsEnabled      Boolean           @default(true)
+  
+  // Status
+  status          PhoneNumberStatus @default(ACTIVE)
+  
+  // Relationships
+  messages        Message[]
+  voicemails      Voicemail[]
+  
+  // Billing
+  monthlyCost     Float             @default(0)
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([tenantId])
+  @@index([phoneNumber])
+  @@index([status])
+}
+
+model Message {
+  id              String            @id @default(uuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Phone number relationship
+  phoneNumberId   String
+  phoneNumber     PhoneNumber       @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  
+  // Call relationship (if sent during a call)
+  callId          String?
+  call            Call?             @relation(fields: [callId], references: [id])
+  
+  // Message details
+  direction       MessageDirection
+  status          MessageStatus     @default(QUEUED)
+  from            String            // E.164 phone number
+  to              String            // E.164 phone number
+  body            String            @db.Text
+  
+  // Twilio tracking
+  twilioSid       String?           @unique  // Twilio Message SID
+  twilioStatus    String?           // Raw Twilio status
+  errorCode       String?
+  errorMessage    String?
+  
+  // Media (MMS)
+  mediaUrls       String[]          @default([])
+  
+  // Pricing
+  price           Float?
+  priceCurrency   String?           @default("USD")
+  
+  // Metadata
+  metadata        Json?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([tenantId])
+  @@index([phoneNumberId])
+  @@index([callId])
+  @@index([direction])
+  @@index([createdAt])
+}
+
+// ============================================
+// Voicemail
+// ============================================
+
+model Voicemail {
+  id              String            @id @default(uuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Optional link to a call
+  callId          String?           @unique
+  call            Call?             @relation(fields: [callId], references: [id])
+  
+  // Optional link to phone number
+  phoneNumberId   String?
+  phoneNumber     PhoneNumber?      @relation(fields: [phoneNumberId], references: [id])
+  
+  // Caller info
+  callerName      String?
+  callerPhone     String?
+  
+  // Storage (for self-hosted recordings)
+  s3Key           String?
+  s3Bucket        String?
+  fileSize        Int               @default(0)
+  mimeType        String            @default("audio/webm")
+  durationMs      Int?
+  
+  // Twilio recording (for phone voicemails)
+  recordingUrl    String?
+  recordingSid    String?
+  
+  // Transcription
+  transcript      String?           @db.Text
+  
+  // Status
+  isRead          Boolean           @default(false)
+  isArchived      Boolean           @default(false)
+  isUrgent        Boolean           @default(false)
+  
+  // Retention
+  expiresAt       DateTime?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([tenantId])
+  @@index([isRead])
+  @@index([isArchived])
+  @@index([createdAt])
+  @@index([phoneNumberId])
+}
+
+// ============================================
+// Knowledge Base & FAQ
+// ============================================
+
+model FAQ {
+  id              String            @id @default(uuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Content
+  question        String            @db.Text
+  answer          String            @db.Text
+  category        String?           // e.g. "billing", "hours", "services"
+  
+  // Search
+  keywords        String[]          @default([])
+  
+  // Ordering & status
+  sortOrder       Int               @default(0)
+  isActive        Boolean           @default(true)
+  
+  // Usage tracking
+  hitCount        Int               @default(0)
+  lastUsedAt      DateTime?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([tenantId])
+  @@index([category])
+  @@index([isActive])
+}
+
+model KnowledgeBase {
+  id              String            @id @default(uuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Document metadata
+  title           String
+  description     String?           @db.Text
+  sourceType      String            @default("manual") // manual, pdf, docx, txt, url
+  sourceUrl       String?           // Original URL or file path
+  
+  // Storage (for uploaded documents)
+  s3Key           String?
+  s3Bucket        String?
+  fileSize        Int?
+  mimeType        String?
+  
+  // Extracted content
+  content         String            @db.Text  // Full extracted text
+  chunks          Json              @default("[]")  // Pre-chunked text for RAG: [{text, index}]
+  
+  // Status
+  isActive        Boolean           @default(true)
+  isProcessed     Boolean           @default(false)
+  processingError String?
+  
+  // Metadata
+  metadata        Json?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([tenantId])
+  @@index([sourceType])
+  @@index([isActive])
+}

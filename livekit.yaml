@@ -1,0 +1,30 @@
+# LiveKit Development Configuration
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: false
+
+redis:
+  address: redis:6379
+
+keys:
+  APIxJnWvXZ6GKts: "apisecretdevsecret12345678901234"
+
+room:
+  enabled_codecs:
+    - mime: audio/opus
+    - mime: audio/red
+  max_participants: 20
+  empty_timeout: 300
+
+logging:
+  level: info
+  json: false
+
+# Webhook configuration - send room events to backend
+webhook:
+  urls:
+    - http://backend:3001/api/livekit/webhook
+  api_key: APIxJnWvXZ6GKts

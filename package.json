@@ -1,0 +1,41 @@
+{
+  "name": "voxreception",
+  "version": "1.0.0",
+  "description": "AI Receptionist SaaS - Multi-tenant voice & video call handling with LiveKit",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm run dev -w @voxreception/backend",
+    "dev:frontend": "npm run dev -w @voxreception/frontend",
+    "build": "npm run build -w @voxreception/backend && npm run build -w @voxreception/frontend",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "docker:dev": "docker-compose -f docker/docker-compose.dev.yml up",
+    "docker:build": "docker-compose -f docker/docker-compose.dev.yml build",
+    "db:migrate": "npm run db:migrate -w @voxreception/backend",
+    "db:seed": "npm run db:seed -w @voxreception/backend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/voxreception.git"
+  },
+  "keywords": [
+    "ai-receptionist",
+    "livekit",
+    "webrtc",
+    "saas",
+    "voice-ai",
+    "speech-to-text",
+    "text-to-speech"
+  ],
+  "license": "MIT"
+}
